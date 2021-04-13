@@ -1,0 +1,371 @@
+---
+title: "From Regression to Machine Learning in R"
+output: html_notebook
+author: Simon Schwab^[University of Zurich, simon.schwab@uzh.ch]
+date: "15/04/2021"
+---
+
+# About this notebook
+This R notebook is the hands-on part of my talk "From regression to machine learning in R".
+
+The goals are:
+
+ * Learn the first steps in machine learning in R
+ * Introduction to R and R Notebooks
+ * Data reading and data management
+ * Visualization and descriptive statistics
+ * Showcase with linear regression (blood pressure)
+ * Showcase with logistic regression (breast cancer)
+
+# Install packages
+```{r}
+# install.packages("mlbench")
+```
+
+
+# Load libraries
+```{r}
+#library(mlbench)
+library(corrplot)
+library(ggplot2)
+library(cowplot)
+library(car)
+library(caret)
+library(testit)
+library(imbalance)
+library(biostatUZH)
+
+COLORS = c("#00ba70", "#e50056")
+```
+
+# Case study 1: Multiple linear regression blood pressure
+
+Goals: 
+
+   * Develop and improve a linear model to predict blood pressure from a set of variables using linear regression.
+
+Data: 
+
+* 1,475 patients with 9 variables (age, height, BMI, etc.)
+* Real-world data by a CDC project NHANES (National Health and Nutrition Examination Survey)
+
+## Reading data
+```{r}
+cdc = read.csv("NHANES.csv")
+N = nrow(cdc)
+cdc[1:5,]
+```
+
+## Data preparation
+```{r}
+new = rep("no diabetes", N)
+new[cdc$diabetes == 1] = "diabetes"
+cdc$diabetes = factor(new, levels = c("no diabetes", "diabetes"))
+
+new = rep("no smoker", N)
+new[cdc$smoker == 1] = "smoker"
+cdc$smoker = factor(new, levels = c("no smoker", "smoker"))
+```
+
+## Exploring the data
+```{r}
+summary(cdc)
+```
+## Data visualization
+```{r fig.height=2, fig.width=5}
+p1 = ggplot(cdc, aes(x=systolic)) +
+  geom_histogram(fill = COLORS[2], bins = 20)
+
+p2 = ggplot(cdc, aes(y=systolic, x=diabetes)) +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 30),
+                         axis.title.x = element_blank())
+
+p3 = ggplot(cdc, aes(y=systolic, x=smoker)) +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 30),
+                         axis.title.x = element_blank())
+
+plot_grid(p1, p2, p3, nrow=1, ncol=3, rel_widths = c(2, 1, 1))
+```
+
+
+```{r}
+p = list()
+cols = c(2:6,9)
+for (i in 1:6) {
+  varName = names(cdc)[cols[i]]
+  p[[i]] = ggplot(cdc, aes_string(x=varName)) +
+    geom_histogram(fill = COLORS[2], bins = 30) + ggtitle(varName)
+}
+
+plot_grid(plotlist = p, nrow=2, ncol=3, rel_widths = c(1, 1, 1))
+```
+
+## Splitting the data into a training and testing set
+```{r}
+set.seed(1103)
+idx = sample(N, round(0.75*N), replace = FALSE)
+cdc.train = cdc[idx,]
+cdc.test = cdc[-idx,]
+assert(nrow(cdc.train) + nrow(cdc.test) == N)
+```
+
+## Mean centering variables
+```{r}
+meanAge = mean(cdc.train$age)
+cdc.train$age = cdc.train$age - meanAge
+summary(cdc.train$age)
+
+cdc.test$age = cdc.test$age - meanAge
+```
+
+
+## Fitting the linear regression
+```{r}
+fit1 = lm(systolic ~ age, data=cdc.train)
+summary(fit1)
+```
+## Checking residuals
+```{r}
+sort(fit1$residuals, decreasing = TRUE)[1:10]
+```
+## Model using all variables
+```{r}
+fit2 = lm(systolic ~ . -fastfood + log(fastfood+0.01), data=cdc.train)
+summary(fit2)
+```
+## Residuals
+```{r fig.height=2, fig.width=7}
+d = data.frame(residuals = fit2$residuals)
+d$fitted.values = fit2$fitted.values
+
+p1 = ggplot(d, aes(x=residuals)) +
+  geom_histogram(fill = COLORS[2], bins = 20) +
+  geom_vline(xintercept=mean(d$residuals), linetype="dashed", color = "black")
+  
+p2 = ggplot(d, aes(x=fitted.values, y=residuals)) +
+  geom_point(shape=1, size=2) +
+  geom_hline(yintercept=0, linetype="dashed", color = COLORS[2])
+
+plot_grid(p1, p2, nrow=1, ncol=2, rel_widths = c(1, 1.5))
+```
+
+## Checking Multicolinearity
+```{r fig.height=2, fig.width=3}
+cols = c(1:6,9)
+r = cor(cdc.train[,cols])
+
+r[upper.tri(r)] = NA
+d = melt(r)
+ggplot(d, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low = COLORS[1], high = COLORS[2], mid = "white", 
+                       na.value = "white", midpoint = 0, limit = c(-1,1),
+                       name="Pearson\nCorrelation") +
+  theme(panel.background=element_rect(fill="white"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 30)) +
+  geom_text(aes(Var1, Var2, label = ifelse(is.na(value), "", sprintf("%.2f",value))), color = "black", size = 2.3)
+```
+
+```{r}
+vif(fit2)
+```
+
+
+```{r}
+fit3 = lm(systolic ~ weight + age, data=cdc.train)
+summary(fit3)
+```
+```{r}
+tableRegression(fit3, xtable = FALSE)
+```
+
+## Influental point analysis
+```{r fig.height=2, fig.width=5}
+d = data.frame(cook = cooks.distance(fit3))
+th = 4 / (nrow(cdc.train) - 3 - 1)
+
+ggplot(d, aes(x=1:nrow(d), y=cook)) +
+  geom_point(shape=1, size=2) +
+  geom_hline(yintercept=th, linetype="dashed", color = COLORS[2])
+
+idx = d > th
+sum(idx) / nrow(cdc.train)
+cdc.train.ex = subset(cdc.train, subset = !idx)
+```
+
+```{r}
+fit4 = lm(systolic ~ weight + age, data=cdc.train.ex)
+summary(fit4)
+```
+
+
+## Model comparison
+```{r}
+AIC(fit1, fit2, fit3)
+```
+##  Prediction of a single new patient
+```{r}
+predict(fit4, 
+        newdata=data.frame(weight=74, age=41-meanAge),
+        interval = "prediction")
+```
+```{r}
+pred1 = as.data.frame(predict(fit4, newdata=cdc.test,  interval = "prediction"))
+pred1$actual = cdc.test$systolic
+print(pred1)
+```
+## Root mean squared error 
+$$
+RMSE = \sqrt{\frac{\sum_{i=1}^{N}(y_i - \hat{y_i})^2}{N}} \\
+R^2 = 1 - \frac{SS_{res}}{SS_{tot}} = 1-  \sqrt{\frac{\sum_{i=1}^{}(y_i - \hat{y_i})^2}{\sum_{i=1}^{}(y_i - \bar{y_i})^2}}
+$$
+```{r}
+
+RMSE = sqrt(sum( (pred1$actual - pred1$fit)^2 ) / nrow(pred1) )
+R2 = 1 - sum((pred1$actual - pred1$fit)^2) / sum((pred1$actual - mean(pred1$actual))^2)
+sprintf("RMSE = %.2f; R-squared = %.3f", RMSE, R2)
+```
+
+
+## Further improving the model
+
+* Add more variables
+* Clinical expertise
+* Non-linear relationships?
+* Interactions?
+
+# Case study 2: Logistic regression with breast cancer data
+## Reading data
+```{r}
+data = read.csv("cancer.csv")
+N = nrow(data)
+# remove first last column
+data = data[,c(-1, -33)]
+data$diagnosis = as.factor(data$diagnosis)
+data[1:5,]
+```
+
+# Data transformation
+```{r}
+for (i in 2:ncol(data)) {
+  data[,i] = as.numeric(scale(data[,i], scale = TRUE, center = TRUE))
+}
+```
+
+
+# Splitting the data
+```{r fig.height=5, fig.width=5}
+set.seed(1103)
+idx = sample(N, round(0.75*N), replace = FALSE)
+data.train.imbal = data[idx,]
+data.test = data[-idx,]
+assert(nrow(data.train.imbal) + nrow(data.test) == N)
+
+#vignette("imbalance")
+
+#https://rpubs.com/yoompubs/467234
+
+nr = table(data.train.imbal$diagnosis)[1]-table(data.train.imbal$diagnosis)[2]
+data.train.synth = mwmote(data.train.imbal, numInstances = nr, classAttr = "diagnosis")
+data.train = rbind(data.train.imbal, data.train.synth)
+
+plotComparison(data.train.imbal, data.train, attrs = names(data.train)[1:4], classAttr = "diagnosis") 
+
+```
+
+# Dealing with multicolinearity
+```{r fig.height=3, fig.width=7}
+M = cor(data.train[,2:ncol(data)])
+
+par(mfrow=c(1,2))
+corrplot(M, diag = FALSE, tl.cex = 0.6)
+corrplot(M, diag = FALSE, tl.cex = 0.6, order = "hclust")
+```
+
+```{r}
+# https://statisticsbyjim.com/regression/multicollinearity-in-regression-analysis/
+M = cor(data.train[,2:ncol(data.train)])
+list = findCorrelation(M, cutoff = 0.60, names = TRUE )
+data.train.subset = data.train[, !(names(data) %in% list)]
+M = cor(data.train.subset[,2:ncol(data.train.subset)])
+corrplot(M, diag = FALSE, tl.cex = 0.7, addCoef.col = "black", number.cex = .7)
+```
+
+```{r fig.height=20, fig.width=5}
+par(mfrow=c(9,2))
+for (i in 2:ncol(data.train.subset)) {
+  hist(data.train.subset[,i], main = names(data.train.subset)[i])
+  boxplot(data.train.subset[,i])
+}
+```
+
+
+Training the model
+```{r}
+fit1 = glm(diagnosis ~ ., family=binomial(), data=data.train.subset)
+# fit2 = glm(diagnosis ~ radius_mean + texture_mean + texture_se + smoothness_worst + 
+#              symmetry_worst, family=binomial(), data=data.train.subset)
+#fit3 = glm(diagnosis ~ radius_mean + smoothness_worst, family=binomial(), data=data.train.subset)
+summary(fit1)
+```
+```{r}
+tableOR(fit1, latex = FALSE, Wald = TRUE)
+```
+
+
+```{r}
+vif(fit1)
+```
+
+
+# Predicton
+```{r}
+pred1 = predict(fit1, data.test, type = "response")
+
+pred1 = ifelse(pred1 >= 0.5, 1, 0)
+tab = table(data.test$diagnosis, pred1)
+print(tab)
+sum(diag(tab)) / nrow(data.test)
+```
+
+```{r}
+drop1(fit2)
+```
+
+
+
+
+# Figure for Slide
+```{r fig.height=3, fig.width=6}
+set.seed(1103)
+k = 14
+data = data.frame(predictor = rnorm(k))
+data$outcome = data$predictor*2 + 3 + rnorm(k)
+
+p1 = ggplot(data, aes(y=outcome, x=predictor)) +
+  geom_point(col=COLORS[2], size=4) +
+  geom_smooth(formula = y ~ x,method=lm, se=FALSE, fullrange=TRUE, col=COLORS[1]) +
+  theme_minimal() + 
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        title = element_text(size=15)) +
+  ggtitle("Regression")
+
+data = data.frame(predictor = c(rnorm(k/2, sd=2), rnorm(k/2, mean=7, sd=1)))
+data$outcome = data$outcome = c(rnorm(k/2, sd=2), rnorm(k/2, mean=7, sd=1))
+
+p2 = ggplot(data, aes(y=outcome, x=predictor)) +
+  geom_point(col=COLORS[2], size=4) +
+  geom_abline(intercept = 8, slope = -1, linetype = "dashed") +
+  theme_minimal() +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        title = element_text(size=15)
+        ) +
+  ggtitle("Classification")
+
+plot_grid(p1, p2, nrow=1, ncol=2)
+```
+
+
