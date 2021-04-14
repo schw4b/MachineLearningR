@@ -6,39 +6,42 @@ date: "15/04/2021"
 ---
 
 # About this notebook
-This R notebook is the hands-on part of my talk "From regression to machine learning in R".
+This R notebook is a tutorial that complements my talk "From regression to machine learning in R".
 
 The goals are:
 
  * Learn the first steps in machine learning in R
- * Introduction to R and R Notebooks
  * Data reading and data management
  * Visualization and descriptive statistics
- * Showcase with linear regression (blood pressure)
- * Showcase with logistic regression (breast cancer)
+ * Showcase with linear regression (CDC data on blood pressure)
+ * Showcase with logistic regression (Wisconsin Breast Cancer Database)
 
 # Install packages
 ```{r}
-# install.packages("mlbench")
+# install.packages("ggplot2")
+# install.packages("reshape2")
+# install.packages("cowplot")
+# install.packages("car")
+# install.packages("caret")
+# install.packages("testit")
+# install.packages("imbalance")
+# install.packages("biostatUZH", repos = "http://R-Forge.R-project.org")
 ```
-
 
 # Load libraries
 ```{r}
-#library(mlbench)
-library(corrplot)
 library(ggplot2)
+library(reshape2)
 library(cowplot)
 library(car)
 library(caret)
 library(testit)
 library(imbalance)
 library(biostatUZH)
-
-COLORS = c("#00ba70", "#e50056")
+library(pROC)
 ```
 
-# Case study 1: Multiple linear regression blood pressure
+# Case study 1: Predicting blood pressure in a CDC dataset by multiple linear regression
 
 Goals: 
 
@@ -46,11 +49,13 @@ Goals:
 
 Data: 
 
-* 1,475 patients with 9 variables (age, height, BMI, etc.)
-* Real-world data by a CDC project NHANES (National Health and Nutrition Examination Survey)
+* 1,475 patients with 9 variables (age, height, BMI, smoking status, etc).
+* Real-world data by a CDC project NHANES (National Health and Nutrition Examination Survey).
+* https://wwwn.cdc.gov/nchs/nhanes/Default.aspx
 
 ## Reading data
 ```{r}
+COLORS = c("#00ba70", "#e50056")
 cdc = read.csv("NHANES.csv")
 N = nrow(cdc)
 cdc[1:5,]
@@ -58,13 +63,13 @@ cdc[1:5,]
 
 ## Data preparation
 ```{r}
-new = rep("no diabetes", N)
-new[cdc$diabetes == 1] = "diabetes"
-cdc$diabetes = factor(new, levels = c("no diabetes", "diabetes"))
+new = rep("No", N)
+new[cdc$diabetes == 1] = "Yes"
+cdc$diabetes = factor(new, levels = c("No", "Yes"))
 
-new = rep("no smoker", N)
-new[cdc$smoker == 1] = "smoker"
-cdc$smoker = factor(new, levels = c("no smoker", "smoker"))
+new = rep("No", N)
+new[cdc$smoker == 1] = "Yes"
+cdc$smoker = factor(new, levels = c("No", "Yes"))
 ```
 
 ## Exploring the data
@@ -76,19 +81,20 @@ summary(cdc)
 p1 = ggplot(cdc, aes(x=systolic)) +
   geom_histogram(fill = COLORS[2], bins = 20)
 
-p2 = ggplot(cdc, aes(y=systolic, x=diabetes)) +
-  geom_boxplot() + theme(axis.text.x = element_text(angle = 30),
-                         axis.title.x = element_blank())
+p2 = ggplot(cdc, aes(y=systolic, x=diabetes, color=diabetes)) +
+  geom_boxplot() + 
+  theme(legend.position = "none") +
+  scale_color_manual(values = COLORS)
 
-p3 = ggplot(cdc, aes(y=systolic, x=smoker)) +
-  geom_boxplot() + theme(axis.text.x = element_text(angle = 30),
-                         axis.title.x = element_blank())
+p3 = ggplot(cdc, aes(y=systolic, x=smoker, color=smoker)) +
+  geom_boxplot() + 
+  theme(legend.position = "none") +
+  scale_color_manual(values = COLORS)
 
 plot_grid(p1, p2, p3, nrow=1, ncol=3, rel_widths = c(2, 1, 1))
 ```
 
-
-```{r}
+```{r fig.height=3, fig.width=5}
 p = list()
 cols = c(2:6,9)
 for (i in 1:6) {
@@ -106,31 +112,42 @@ set.seed(1103)
 idx = sample(N, round(0.75*N), replace = FALSE)
 cdc.train = cdc[idx,]
 cdc.test = cdc[-idx,]
+
 assert(nrow(cdc.train) + nrow(cdc.test) == N)
 ```
 
 ## Mean centering variables
+
+* When data transformations are performed they should be explained in the methods section
+* Should be applied to the whole dataset (training and testing)
 ```{r}
 meanAge = mean(cdc.train$age)
+
 cdc.train$age = cdc.train$age - meanAge
-summary(cdc.train$age)
-
 cdc.test$age = cdc.test$age - meanAge
-```
 
+summary(cdc.train$age)
+```
 
 ## Fitting the linear regression
 ```{r}
 fit1 = lm(systolic ~ age, data=cdc.train)
 summary(fit1)
 ```
-## Checking residuals
+## Residual analysis: accessing the largest residuals
+
+$$
+\text{Residual: } e_i = y_i - \hat{y_i}
+$$
 ```{r}
 sort(fit1$residuals, decreasing = TRUE)[1:10]
+idx = which.max(fit1$residuals)
+sprintf("Actual systolic pressure was %.0f but we estimated %.0f", cdc.train$systolic[idx], fit1$fitted.values[idx])
 ```
+
 ## Model using all variables
 ```{r}
-fit2 = lm(systolic ~ . -fastfood + log(fastfood+0.01), data=cdc.train)
+fit2 = lm(systolic ~ ., data=cdc.train)
 summary(fit2)
 ```
 ## Residuals
@@ -167,6 +184,10 @@ ggplot(d, aes(x=Var1, y=Var2, fill=value)) +
   geom_text(aes(Var1, Var2, label = ifelse(is.na(value), "", sprintf("%.2f",value))), color = "black", size = 2.3)
 ```
 
+Variance Inflation Factor (VIF) is a measure of how much the variance of the estimated regression coefficient for that variable is inflated by the existence of correlation among the predictor variables in the model. 
+
+ * A Cut-off of VIF > 5 is commonly used
+
 ```{r}
 vif(fit2)
 ```
@@ -177,20 +198,33 @@ fit3 = lm(systolic ~ weight + age, data=cdc.train)
 summary(fit3)
 ```
 ```{r}
-tableRegression(fit3, xtable = FALSE)
+tab = tableRegression(fit3, xtable = FALSE)
+names(tab)[2:3] = c("95%-confidence interval", "p-value")
+print(tab)
 ```
 
 ## Influental point analysis
+
+* The goal of Influential Point Analysis is to identify extreme values in the multidimensional space
+* We use Cook's distance function to identify influential points
+* $D_i$ is sum of all the changes in the regression model when an observation $i$ is removed from it
+* For an observation to be flagged, its Cook's distance should be greater than
+
+$$
+\text{Cut-off value t} = \frac{4}{n - k - 1}
+$$
+
 ```{r fig.height=2, fig.width=5}
 d = data.frame(cook = cooks.distance(fit3))
-th = 4 / (nrow(cdc.train) - 3 - 1)
+t = 4 / (nrow(cdc.train) - 3 - 1)
 
 ggplot(d, aes(x=1:nrow(d), y=cook)) +
   geom_point(shape=1, size=2) +
-  geom_hline(yintercept=th, linetype="dashed", color = COLORS[2])
+  geom_hline(yintercept=t, linetype="dashed", color = COLORS[2]) +
+  ylab("Cook's distance D")
 
-idx = d > th
-sum(idx) / nrow(cdc.train)
+idx = d > t
+# sum(idx) / nrow(cdc.train)
 cdc.train.ex = subset(cdc.train, subset = !idx)
 ```
 
@@ -199,8 +233,20 @@ fit4 = lm(systolic ~ weight + age, data=cdc.train.ex)
 summary(fit4)
 ```
 
+```{r}
+tab = tableRegression(fit4, xtable = FALSE)
+names(tab)[2:3] = c("95%-confidence interval", "p-value")
+print(tab)
+```
 
 ## Model comparison
+
+AIC (Akaike information criterion) quantifies how well the model did in predicting explaining the variability in the data (goodness of fit)
+* Can compare multiple models
+* Need to have the same data
+* Includes a penalty for each additional variable
+* The lower the AIC, the better
+
 ```{r}
 AIC(fit1, fit2, fit3)
 ```
@@ -210,18 +256,19 @@ predict(fit4,
         newdata=data.frame(weight=74, age=41-meanAge),
         interval = "prediction")
 ```
+
+## Validation with the test dataset
 ```{r}
-pred1 = as.data.frame(predict(fit4, newdata=cdc.test,  interval = "prediction"))
+pred1 = as.data.frame(predict(fit3, newdata=cdc.test,  interval = "prediction"))
 pred1$actual = cdc.test$systolic
 print(pred1)
 ```
-## Root mean squared error 
+## Evaluating performence: Root mean squared error and R-Square
 $$
 RMSE = \sqrt{\frac{\sum_{i=1}^{N}(y_i - \hat{y_i})^2}{N}} \\
 R^2 = 1 - \frac{SS_{res}}{SS_{tot}} = 1-  \sqrt{\frac{\sum_{i=1}^{}(y_i - \hat{y_i})^2}{\sum_{i=1}^{}(y_i - \bar{y_i})^2}}
 $$
 ```{r}
-
 RMSE = sqrt(sum( (pred1$actual - pred1$fit)^2 ) / nrow(pred1) )
 R2 = 1 - sum((pred1$actual - pred1$fit)^2) / sum((pred1$actual - mean(pred1$actual))^2)
 sprintf("RMSE = %.2f; R-squared = %.3f", RMSE, R2)
@@ -231,79 +278,160 @@ sprintf("RMSE = %.2f; R-squared = %.3f", RMSE, R2)
 ## Further improving the model
 
 * Add more variables
-* Clinical expertise
-* Non-linear relationships?
-* Interactions?
+* Clinical knowledge should be included in variable selection
+* Are there non-linear relationships?
+* Are there interactions?
 
-# Case study 2: Logistic regression with breast cancer data
+## Questions & Answers
+
+# Case study 2: Logistic regression with Wisconsin cancer data
+
+Breast Cancer Wisconsin (Diagnostic) Data Set
+
+* Features are computed from a digitized image of a fine needle aspirate (FNA) of a breast mass. They describe characteristics of the cell nuclei present in the image.
+* https://www.kaggle.com/uciml/breast-cancer-wisconsin-data
+
 ## Reading data
 ```{r}
-data = read.csv("cancer.csv")
-N = nrow(data)
+COLORS = c("#00ba70", "#e50056")
+cancer = read.csv("cancer.csv")
+N = nrow(cancer)
 # remove first last column
-data = data[,c(-1, -33)]
-data$diagnosis = as.factor(data$diagnosis)
-data[1:5,]
+cancer = cancer[,c(-1, -33)]
+cancer$diagnosis = as.factor(cancer$diagnosis)
+cancer[1:5,]
 ```
 
-# Data transformation
+## Histograms of all variables
+```{r fig.height=10, fig.width=8}
+p = list()
+cols = c(2:31)
+for (i in 1:30) {
+  varName = names(cancer)[cols[i]]
+  p[[i]] = ggplot(cancer, aes_string(x=varName)) +
+    geom_histogram(fill = COLORS[2], bins = 30) + ggtitle(varName)
+}
+
+plot_grid(plotlist = p, nrow=6, ncol=5, rel_widths = c(1, 1, 1))
+```
+
+## Data transformation
 ```{r}
-for (i in 2:ncol(data)) {
-  data[,i] = as.numeric(scale(data[,i], scale = TRUE, center = TRUE))
+for (i in 2:ncol(cancer)) {
+  cancer[,i] = as.numeric(scale(cancer[,i], scale = TRUE, center = TRUE))
 }
 ```
 
 
-# Splitting the data
+## Splitting the data
 ```{r fig.height=5, fig.width=5}
 set.seed(1103)
 idx = sample(N, round(0.75*N), replace = FALSE)
-data.train.imbal = data[idx,]
-data.test = data[-idx,]
-assert(nrow(data.train.imbal) + nrow(data.test) == N)
+cancer.train.imbal = cancer[idx,]
+cancer.test = cancer[-idx,]
+assert(nrow(cancer.train.imbal) + nrow(cancer.test) == N)
+```
 
+## Synthetic Minority Oversampling Technique (SMOTE)
+
+  Ideally the class distribution in the training data should be uniform, but this is not always the case (class imbalance)
+  * Often the minority class is of interest
+  * However, because there are fewer examples for the minority class, it is more challenging for a model to effectively learn the patterns of the minority class
+  * Can add bias, e.g. too optimistic predictive accuray
+  
+How to address class imbalance
+ * Collect more data
+ * Resample startegies, e.g. with the package "imbalance", see https://rpubs.com/yoompubs/467234
+ 
+```{r}
 #vignette("imbalance")
-
-#https://rpubs.com/yoompubs/467234
-
-nr = table(data.train.imbal$diagnosis)[1]-table(data.train.imbal$diagnosis)[2]
-data.train.synth = mwmote(data.train.imbal, numInstances = nr, classAttr = "diagnosis")
-data.train = rbind(data.train.imbal, data.train.synth)
-
-plotComparison(data.train.imbal, data.train, attrs = names(data.train)[1:4], classAttr = "diagnosis") 
-
-```
-
-# Dealing with multicolinearity
-```{r fig.height=3, fig.width=7}
-M = cor(data.train[,2:ncol(data)])
-
-par(mfrow=c(1,2))
-corrplot(M, diag = FALSE, tl.cex = 0.6)
-corrplot(M, diag = FALSE, tl.cex = 0.6, order = "hclust")
+set.seed(1103)
+nr = table(cancer.train.imbal$diagnosis)[1] - table(cancer.train.imbal$diagnosis)[2]
+cancer.train.synth = mwmote(cancer.train.imbal, numInstances = nr, classAttr = "diagnosis")
+cancer.train = rbind(cancer.train.imbal, cancer.train.synth)
+summary(cancer.train$diagnosis)
 ```
 
 ```{r}
-# https://statisticsbyjim.com/regression/multicollinearity-in-regression-analysis/
-M = cor(data.train[,2:ncol(data.train)])
-list = findCorrelation(M, cutoff = 0.60, names = TRUE )
-data.train.subset = data.train[, !(names(data) %in% list)]
-M = cor(data.train.subset[,2:ncol(data.train.subset)])
-corrplot(M, diag = FALSE, tl.cex = 0.7, addCoef.col = "black", number.cex = .7)
-```
+p = list()
+myVars = names(cancer)[2:4]
+C = combn(1:3,2)
 
-```{r fig.height=20, fig.width=5}
-par(mfrow=c(9,2))
-for (i in 2:ncol(data.train.subset)) {
-  hist(data.train.subset[,i], main = names(data.train.subset)[i])
-  boxplot(data.train.subset[,i])
+m = 1
+for (i in seq(1,6,2)) { 
+  p[[i]] = ggplot(cancer.train.imbal, aes_string(x=myVars[C[1,m]], y=myVars[C[2,m]], color="diagnosis")) +
+    geom_point(shape=1, size=1) +
+    scale_color_manual(values = COLORS)
+  if (i==1) {p[[i]] = p[[i]] + ggtitle("Original dataset")}
+  
+  p[[i+1]] = ggplot(cancer.train, aes_string(x=myVars[C[1,m]], y=myVars[C[2,m]], color="diagnosis")) +
+    geom_point(shape=1, size=1) +
+    scale_color_manual(values = COLORS)
+  if (i==1) {p[[i+1]] = p[[i+1]] + ggtitle("Balanced dataset")}
+  
+  m = m + 1
 }
+
+plot_grid(plotlist = p, nrow=3, ncol=2)
 ```
 
 
-Training the model
+## Dealing with multicolinearity
+```{r fig.height=4, fig.width=5}
+R = cor(cancer.train[,2:ncol(cancer.train)])
+R[upper.tri(R)] = NA
+d = melt(R)
+ggplot(d, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile(colour = "white") +
+  scale_fill_gradient2(low = COLORS[1], high = COLORS[2], mid = "white", 
+                       na.value = "gray90", midpoint = 0, limit = c(-1,1),
+                       name="Pearson\nCorrelation") +
+  theme(panel.background=element_rect(fill="white"),
+        axis.title = element_blank(),
+        axis.text = element_text(size=8),
+        axis.text.x = element_text(angle = 90)) +
+  geom_text(aes(Var1, Var2,
+                label = ifelse(is.na(value) | (value < 0.60 & value > -0.60),
+                                           "", sub("^(-?)0.", "\\1.", sprintf("%.2f", value)))), color = "black", size = 1.8)
+```
+
+## How to Deal with Multicollinearity
+
+* Remove some of the highly correlated independent variables
+* Linearly combine the variables, such as adding them together
+* Perform an analysis designed for highly correlated variables, such as principal components analysis or partial least squares regression
+* LASSO and Ridge regression are advanced forms of regression analysis that can handle multicollinearity
+
+https://statisticsbyjim.com/regression/multicollinearity-in-regression-analysis/
+
 ```{r}
-fit1 = glm(diagnosis ~ ., family=binomial(), data=data.train.subset)
+R = cor(cancer.train[,2:ncol(cancer.train)])
+list = findCorrelation(R, cutoff = 0.60, names = TRUE )
+cancer.train.subset = cancer.train[, !(names(cancer) %in% list)]
+```
+
+```{r fig.height=3, fig.width=4}
+M = cor(cancer.train.subset[,2:ncol(cancer.train.subset)])
+M[upper.tri(M)] = NA
+d = melt(M)
+ggplot(d, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile(colour = "white") +
+  scale_fill_gradient2(low = COLORS[1], high = COLORS[2], mid = "white", 
+                       na.value = "gray90", midpoint = 0, limit = c(-1,1),
+                       name="Pearson\nCorrelation") +
+  theme(panel.background=element_rect(fill="white"),
+        axis.title = element_blank(),
+        axis.text = element_text(size=8),
+        axis.text.x = element_text(angle = 90)) +
+  geom_text(aes(Var1, Var2, 
+                #label = ifelse(is.na(value) | (value < 0.60 & value > -0.60),
+                label = ifelse(is.na(value), "",
+                               sub("^(-?)0.", "\\1.", sprintf("%.2f", value)))), color = "black", size = 2.5)
+```
+
+## Training the model
+```{r}
+fit1 = glm(diagnosis ~ ., family=binomial(), data=cancer.train.subset)
 # fit2 = glm(diagnosis ~ radius_mean + texture_mean + texture_se + smoothness_worst + 
 #              symmetry_worst, family=binomial(), data=data.train.subset)
 #fit3 = glm(diagnosis ~ radius_mean + smoothness_worst, family=binomial(), data=data.train.subset)
@@ -313,38 +441,92 @@ summary(fit1)
 tableOR(fit1, latex = FALSE, Wald = TRUE)
 ```
 
-
+## Check variable importance with AIC
 ```{r}
-vif(fit1)
+drop1(fit1)
 ```
 
-
-# Predicton
 ```{r}
-pred1 = predict(fit1, data.test, type = "response")
+fit2 = glm(diagnosis ~ area_mean, family=binomial(), data=cancer.train.subset)
+summary(fit2)
+```
 
-pred1 = ifelse(pred1 >= 0.5, 1, 0)
-tab = table(data.test$diagnosis, pred1)
+## Confusion matrix, sensitivity and specificity
+```{r}
+pred1 = predict(fit1, cancer.test, type = "response")
+tab = table(cancer.test$diagnosis, ifelse(pred1 >= 0.5, 1, 0))
 print(tab)
-sum(diag(tab)) / nrow(data.test)
 ```
+
+$$
+Sensitivity = \frac{TP}{TP + FN} = \frac{48}{48 + 6} = 0.889 \\
+Specificity = \frac{TN}{TN + FP} = \frac{84}{84 + 4} = 0.955
+$$
+
 
 ```{r}
-drop1(fit2)
+pred2 = predict(fit2, cancer.test, type = "response")
+tab = table(cancer.test$diagnosis, ifelse(pred2 >= 0.5, 1, 0))
+print(tab)
 ```
 
+$$
+Sensitivity = \frac{TP}{TP + FN} = \frac{45}{45 + 9} = 0.833 \\
+Specificity = \frac{TN}{TN + FP} = \frac{74}{74 + 14} = 0.841
+$$
+# Calculate the propensities at different thresholds
+```{r}
+t = sort(rep(seq(0, 1, 0.2),2))
+k = length(t)
+tab = data.frame(sensitivity = rep(NA, k),
+                 specificity = rep(NA, k),
+                 threshold   = t,
+                 model = rep(NA, k))
 
+for ( i in seq(1,k,2) ) {
+  tab$sensitivity[i] =  sum( pred1 >  t[i] & cancer.test$diagnosis=="M" ) / sum(cancer.test$diagnosis=="M")
+  tab$specificity[i] =  sum( pred1 <= t[i] & cancer.test$diagnosis=="B" ) / sum(cancer.test$diagnosis=="B")
+  tab$model[i] = "Model 1"
+  
+  tab$sensitivity[i+1] =  sum( pred2 >  t[i] & cancer.test$diagnosis=="M" ) / sum(cancer.test$diagnosis=="M")
+  tab$specificity[i+1] =  sum( pred2 <= t[i] & cancer.test$diagnosis=="B" ) / sum(cancer.test$diagnosis=="B")
+  tab$model[i+1] = "Model 2"
+}
 
+tab[1:5,]
+```
 
-# Figure for Slide
+## Receiver operating characteristic Curve (ROC)
+
+* ML algorithms are not binary decisions, we have probabilities that a patient belongs to a particular class
+* Adjusting the cut-off value has an impact on sensitivity and specificity
+* The ROC curve illustrates the inherent trade-off that exists between sensitivity and specificity
+* The AUC (area under the curve) is the probability that a classifier ranks a randomly chosen positive instance above a randomly chosen negative instance
+* The AUC ranges from 0.5 (no predictive value) to 1.0 (perfect classifier)
+
+```{r fig.height=3.5, fig.width=3.5, message=FALSE}
+myroc1 = roc(response = cancer.test$diagnosis, predictor = pred1) # from pROC package
+myroc2 = roc(response = cancer.test$diagnosis, predictor = pred2)
+
+ggplot(tab) + 
+  geom_line(aes(x=1-specificity, y=sensitivity, group=model, color=model)) +
+  geom_abline(intercept=0, slope=1, linetype=3) + theme(aspect.ratio=1) + 
+  xlim(0,1) + ylim(0,1) +
+  scale_color_manual(values = COLORS) +
+  annotate("text", x = 0.3, y=0.95, label = sprintf("AUC=%.2f", myroc1$auc), color = COLORS[1]) +
+  annotate("text", x = 0.4, y=0.80, label = sprintf("AUC=%.2f", myroc2$auc), color= COLORS[2])
+```
+
+# Figure for presentation front slide
 ```{r fig.height=3, fig.width=6}
 set.seed(1103)
-k = 14
+k = 140
 data = data.frame(predictor = rnorm(k))
 data$outcome = data$predictor*2 + 3 + rnorm(k)
 
+
 p1 = ggplot(data, aes(y=outcome, x=predictor)) +
-  geom_point(col=COLORS[2], size=4) +
+  geom_point(col=COLORS[2], size=4, shape=1) +
   geom_smooth(formula = y ~ x,method=lm, se=FALSE, fullrange=TRUE, col=COLORS[1]) +
   theme_minimal() + 
   theme(axis.text = element_blank(),
@@ -354,16 +536,19 @@ p1 = ggplot(data, aes(y=outcome, x=predictor)) +
 
 data = data.frame(predictor = c(rnorm(k/2, sd=2), rnorm(k/2, mean=7, sd=1)))
 data$outcome = data$outcome = c(rnorm(k/2, sd=2), rnorm(k/2, mean=7, sd=1))
+data$class = "B"
+data$class[1:(k/2)] = "A"
 
-p2 = ggplot(data, aes(y=outcome, x=predictor)) +
-  geom_point(col=COLORS[2], size=4) +
+p2 = ggplot(data, aes(y=outcome, x=predictor, color=class)) +
+  geom_point(size=4) +
   geom_abline(intercept = 8, slope = -1, linetype = "dashed") +
   theme_minimal() +
   theme(axis.text = element_blank(),
         axis.title = element_blank(),
-        title = element_text(size=15)
-        ) +
-  ggtitle("Classification")
+        title = element_text(size=15),
+        legend.position = "none") +
+  ggtitle("Classification") + 
+  scale_color_manual(values = COLORS)
 
 plot_grid(p1, p2, nrow=1, ncol=2)
 ```
