@@ -26,6 +26,7 @@ The goals are:
 # install.packages("testit")
 # install.packages("imbalance")
 # install.packages("biostatUZH", repos = "http://R-Forge.R-project.org")
+# install.packages("biostatUZH", repos = "http://R-Forge.R-project.org", type = "source") # as an alternative
 ```
 
 # Load libraries
@@ -242,10 +243,11 @@ print(tab)
 ## Model comparison
 
 AIC (Akaike information criterion) quantifies how well the model did in predicting explaining the variability in the data (goodness of fit)
-* Can compare multiple models
-* Need to have the same data
-* Includes a penalty for each additional variable
-* The lower the AIC, the better
+
+ * Can compare multiple models
+ * Need to have the same data
+ * Includes a penalty for each additional variable
+ * The lower the AIC, the better
 
 ```{r}
 AIC(fit1, fit2, fit3)
@@ -335,13 +337,15 @@ assert(nrow(cancer.train.imbal) + nrow(cancer.test) == N)
 ## Synthetic Minority Oversampling Technique (SMOTE)
 
   Ideally the class distribution in the training data should be uniform, but this is not always the case (class imbalance)
+  
   * Often the minority class is of interest
   * However, because there are fewer examples for the minority class, it is more challenging for a model to effectively learn the patterns of the minority class
-  * Can add bias, e.g. too optimistic predictive accuray
+  * Can add bias, e.g. too optimistic predictive accuracy
   
 How to address class imbalance
+
  * Collect more data
- * Resample startegies, e.g. with the package "imbalance", see https://rpubs.com/yoompubs/467234
+ * Resampling strategies, e.g. with the package "imbalance", see https://rpubs.com/yoompubs/467234
  
 ```{r}
 #vignette("imbalance")
@@ -474,9 +478,10 @@ $$
 Sensitivity = \frac{TP}{TP + FN} = \frac{45}{45 + 9} = 0.833 \\
 Specificity = \frac{TN}{TN + FP} = \frac{74}{74 + 14} = 0.841
 $$
-# Calculate the propensities at different thresholds
+## Calculate the propensities at different thresholds
+
 ```{r}
-t = sort(rep(seq(0, 1, 0.2),2))
+t = sort(rep(seq(0, 1, 0.20),2))
 k = length(t)
 tab = data.frame(sensitivity = rep(NA, k),
                  specificity = rep(NA, k),
@@ -504,7 +509,7 @@ tab[1:5,]
 * The AUC (area under the curve) is the probability that a classifier ranks a randomly chosen positive instance above a randomly chosen negative instance
 * The AUC ranges from 0.5 (no predictive value) to 1.0 (perfect classifier)
 
-```{r fig.height=3.5, fig.width=3.5, message=FALSE}
+```{r fig.height=5, fig.width=5, message=FALSE}
 myroc1 = roc(response = cancer.test$diagnosis, predictor = pred1) # from pROC package
 myroc2 = roc(response = cancer.test$diagnosis, predictor = pred2)
 
